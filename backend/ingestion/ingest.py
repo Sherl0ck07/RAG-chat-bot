@@ -2,13 +2,14 @@
 Data Ingestion Pipeline for Veltris Doc-Bot
 Filters accelerate documentation, chunks it, and stores in ChromaDB
 """
-
+# File: backend/ingestion/ingest.py
 import os
 import sys
 from pathlib import Path
 from typing import List, Dict
 import logging
 from datetime import datetime
+from tqdm import tqdm
 
 from datasets import load_dataset
 from langchain.text_splitter import RecursiveCharacterTextSplitter
@@ -16,6 +17,8 @@ from langchain.schema import Document
 from langchain_community.embeddings import HuggingFaceEmbeddings
 from langchain_community.vectorstores import Chroma
 from dotenv import load_dotenv
+
+
 
 # Configure logging
 logging.basicConfig(
@@ -27,6 +30,10 @@ logger = logging.getLogger(__name__)
 # Load environment variables
 load_dotenv()
 
+import torch
+
+device = "cuda" if torch.cuda.is_available() else "cpu"
+logger.info(f"Using embedding device: {device}")
 
 class DocumentIngestionError(Exception):
     """Custom exception for ingestion errors"""
@@ -62,7 +69,8 @@ class DocumentIngestionPipeline:
             logger.info(f"Loading embedding model: {embedding_model}")
             self.embeddings = HuggingFaceEmbeddings(
                 model_name=embedding_model,
-                model_kwargs={'device': 'cpu'}
+                model_kwargs={"device": device},
+    encode_kwargs={"batch_size": 64}
             )
             logger.info("Embedding model loaded successfully")
         except Exception as e:
@@ -71,18 +79,22 @@ class DocumentIngestionPipeline:
     
     def load_huggingface_docs(self, subset_filter: str = "accelerate") -> List[Dict]:
         """Load HuggingFace documentation dataset and filter by subset"""
+        print(f"[INGEST_LOAD] Loading HuggingFace documentation dataset...")
         logger.info(f"Loading HuggingFace documentation dataset (filter: {subset_filter})...")
         
         try:
+            print(f"[INGEST_LOAD] Fetching dataset from Hugging Face...")
             ds = load_dataset("m-ric/huggingface_doc", split="train")
+            print(f"[INGEST_LOAD] Total documents in dataset: {len(ds)}")
             logger.info(f"Total documents loaded: {len(ds)}")
             
             if not ds:
                 raise DocumentIngestionError("Dataset is empty")
             
             # Filter for accelerate docs
+            print(f"[INGEST_LOAD] Filtering documents for '{subset_filter}'...")
             filtered_docs = []
-            for idx, doc in enumerate(ds):
+            for idx, doc in enumerate(tqdm(ds, desc="Filtering documents")):
                 try:
                     source = doc.get("source", "")
                     text = doc.get("text", "")
@@ -100,6 +112,7 @@ class DocumentIngestionPipeline:
                     logger.warning(f"Error processing document {idx}: {type(e).__name__}: {e}")
                     continue
             
+            print(f"[INGEST_LOAD] Filtered documents: {len(filtered_docs)} matching '{subset_filter}'")
             logger.info(f"Filtered documents ({subset_filter}): {len(filtered_docs)}")
             
             if not filtered_docs:
@@ -150,12 +163,15 @@ class DocumentIngestionPipeline:
     
     def create_chunks(self, documents: List[Dict]) -> List[Document]:
         """Chunk documents with metadata preservation"""
+        print(f"[INGEST_CHUNK] Starting chunking process for {len(documents)} documents")
+        print(f"[INGEST_CHUNK] Chunk size={self.chunk_size}, overlap={self.chunk_overlap}")
         logger.info("Creating document chunks...")
         
         try:
             all_chunks = []
             
-            for idx, doc in enumerate(documents):
+            for idx, doc in enumerate(tqdm(documents, desc="Chunking documents")):
+
                 try:
                     text = doc.get("text", "")
                     source = doc.get("source", "")
@@ -171,6 +187,7 @@ class DocumentIngestionPipeline:
                     
                     # Split text into chunks
                     chunks = self.text_splitter.split_text(text)
+                    print(f"[INGEST_CHUNK] Document {idx}: {len(chunks)} chunks created (text_len={len(text)})")
                     
                     if not chunks:
                         logger.warning(f"Document {idx} produced no chunks")
@@ -198,6 +215,7 @@ class DocumentIngestionPipeline:
             if not all_chunks:
                 raise DocumentIngestionError("No chunks were created from documents")
             
+            print(f"[INGEST_CHUNK] Chunking complete: {len(all_chunks)} total chunks from {len(documents)} documents")
             logger.info(f"Created {len(all_chunks)} chunks from {len(documents)} documents")
             return all_chunks
             
@@ -208,83 +226,98 @@ class DocumentIngestionPipeline:
             raise DocumentIngestionError(f"Failed to create chunks: {str(e)}")
     
     def store_in_vectordb(self, chunks: List[Document]) -> Chroma:
-        """Store chunks in ChromaDB with embeddings"""
+        print(f"[INGEST_STORE] Starting vector database storage for {len(chunks)} chunks")
         logger.info("Storing chunks in vector database...")
-        
-        try:
-            if not chunks:
-                raise DocumentIngestionError("No chunks provided for storage")
-            
-            # Create persist directory if it doesn't exist
-            try:
-                Path(self.persist_directory).mkdir(parents=True, exist_ok=True)
-            except Exception as e:
-                logger.error(f"Failed to create persist directory: {type(e).__name__}: {e}")
-                raise DocumentIngestionError(f"Cannot create directory: {self.persist_directory}")
-            
-            # Create Chroma vector store
-            vectordb = Chroma.from_documents(
-                documents=chunks,
-                embedding=self.embeddings,
-                persist_directory=self.persist_directory,
-                collection_name=self.collection_name
-            )
-            
-            # Persist the database
-            vectordb.persist()
-            
-            logger.info(f"Successfully stored {len(chunks)} chunks in ChromaDB")
-            logger.info(f"Persist directory: {self.persist_directory}")
-            
-            return vectordb
-            
-        except DocumentIngestionError:
-            raise
-        except Exception as e:
-            logger.error(f"Error storing in vector database: {type(e).__name__}: {e}")
-            raise DocumentIngestionError(f"Failed to store in vector database: {str(e)}")
+
+        if not chunks:
+            raise DocumentIngestionError("No chunks provided for storage")
+
+        print(f"[INGEST_STORE] Creating persist directory: {self.persist_directory}")
+        Path(self.persist_directory).mkdir(parents=True, exist_ok=True)
+
+        print(f"[INGEST_STORE] Initializing ChromaDB with collection: {self.collection_name}")
+        vectordb = Chroma(
+            embedding_function=self.embeddings,
+            persist_directory=self.persist_directory,
+            collection_name=self.collection_name
+        )
+
+        BATCH_SIZE = 256
+        print(f"[INGEST_STORE] Adding documents in batches of {BATCH_SIZE}")
+
+        for i in tqdm(
+            range(0, len(chunks), BATCH_SIZE),
+            desc="Embedding + storing chunks"
+        ):
+            batch = chunks[i:i + BATCH_SIZE]
+            print(f"[INGEST_STORE] Adding batch {i//BATCH_SIZE + 1}: {len(batch)} chunks")
+            vectordb.add_documents(batch)
+
+        print(f"[INGEST_STORE] Persisting ChromaDB to disk...")
+        vectordb.persist()
+
+        print(f"[INGEST_STORE] Successfully stored {len(chunks)} chunks in ChromaDB")
+        logger.info(f"Stored {len(chunks)} chunks in ChromaDB")
+        return vectordb
+
     
     def run_pipeline(self, subset_filter: str = "accelerate"):
         """Run the complete ingestion pipeline"""
+        print("\n[INGEST_PIPELINE] " + "="*60)
+        print("[INGEST_PIPELINE] Starting Document Ingestion Pipeline")
+        print("[INGEST_PIPELINE] " + "="*60)
         logger.info("="*60)
         logger.info("Starting Document Ingestion Pipeline")
         logger.info("="*60)
         
         try:
             # Step 1: Load documents
+            print(f"[INGEST_PIPELINE] Step 1: Loading documents")
             try:
                 documents = self.load_huggingface_docs(subset_filter)
+                print(f"[INGEST_PIPELINE] Step 1 complete: {len(documents)} documents loaded")
             except DocumentIngestionError:
                 raise
             except Exception as e:
                 raise DocumentIngestionError(f"Failed to load documents: {str(e)}")
             
             # Step 2: Create chunks
+            print(f"[INGEST_PIPELINE] Step 2: Creating chunks")
             try:
                 chunks = self.create_chunks(documents)
+                print(f"[INGEST_PIPELINE] Step 2 complete: {len(chunks)} chunks created")
             except DocumentIngestionError:
                 raise
             except Exception as e:
                 raise DocumentIngestionError(f"Failed to create chunks: {str(e)}")
             
             # Step 3: Store in vector database
+            print(f"[INGEST_PIPELINE] Step 3: Storing in vector database")
             try:
                 vectordb = self.store_in_vectordb(chunks)
+                print(f"[INGEST_PIPELINE] Step 3 complete: Chunks stored in ChromaDB")
             except DocumentIngestionError:
                 raise
             except Exception as e:
                 raise DocumentIngestionError(f"Failed to store in vector database: {str(e)}")
             
             # Step 4: Verify storage
+            print(f"[INGEST_PIPELINE] Step 4: Verifying storage")
             try:
                 collection_count = vectordb._collection.count()
+                print(f"[INGEST_PIPELINE] Vector DB collection count: {collection_count}")
                 logger.info(f"Vector DB collection count: {collection_count}")
                 
                 if collection_count == 0:
+                    print(f"[INGEST_PIPELINE] WARNING: Vector DB collection is empty after ingestion")
                     logger.warning("Vector DB collection is empty after ingestion")
             except Exception as e:
+                print(f"[INGEST_PIPELINE] Warning verifying storage: {type(e).__name__}: {e}")
                 logger.warning(f"Failed to verify storage: {type(e).__name__}: {e}")
             
+            print("[INGEST_PIPELINE] " + "="*60)
+            print("[INGEST_PIPELINE] Ingestion Pipeline Completed Successfully!")
+            print("[INGEST_PIPELINE] " + "="*60)
             logger.info("="*60)
             logger.info("Ingestion Pipeline Completed Successfully!")
             logger.info("="*60)
@@ -301,6 +334,7 @@ class DocumentIngestionPipeline:
 
 def main():
     """Main execution function"""
+    print("\n[MAIN] Starting document ingestion...")
     try:
         # Load configuration from environment or use defaults
         chunk_size = int(os.getenv("CHUNK_SIZE", 1000))
@@ -309,8 +343,16 @@ def main():
         persist_directory = os.getenv("CHROMA_PERSIST_DIRECTORY", "../vector_db")
         collection_name = os.getenv("COLLECTION_NAME", "accelerate_docs")
         
+        print(f"[MAIN] Configuration loaded:")
+        print(f"[MAIN]   chunk_size={chunk_size}")
+        print(f"[MAIN]   chunk_overlap={chunk_overlap}")
+        print(f"[MAIN]   embedding_model={embedding_model}")
+        print(f"[MAIN]   persist_directory={persist_directory}")
+        print(f"[MAIN]   collection_name={collection_name}")
+        
         # Initialize pipeline
         try:
+            print(f"[MAIN] Initializing pipeline...")
             pipeline = DocumentIngestionPipeline(
                 chunk_size=chunk_size,
                 chunk_overlap=chunk_overlap,
@@ -318,19 +360,25 @@ def main():
                 persist_directory=persist_directory,
                 collection_name=collection_name
             )
+            print(f"[MAIN] Pipeline initialized successfully")
         except DocumentIngestionError as e:
+            print(f"[MAIN] ERROR: Failed to initialize pipeline: {str(e)}")
             logger.error(f"Failed to initialize pipeline: {str(e)}")
             return 1
         
         # Run pipeline
         try:
+            print(f"[MAIN] Running ingestion pipeline...")
             pipeline.run_pipeline(subset_filter="accelerate")
+            print(f"[MAIN] Ingestion completed successfully")
             return 0
         except DocumentIngestionError as e:
+            print(f"[MAIN] ERROR: Ingestion failed: {str(e)}")
             logger.error(f"Ingestion failed: {str(e)}")
             return 1
             
     except Exception as e:
+        print(f"[MAIN] ERROR: Unexpected error: {type(e).__name__}: {e}")
         logger.error(f"Unexpected error in main: {type(e).__name__}: {e}", exc_info=True)
         return 1
 

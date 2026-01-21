@@ -1,7 +1,7 @@
 """
 FastAPI Application - Veltris Intelligent Doc-Bot
 """
-
+# File: backend/app/main.py
 from fastapi import FastAPI, HTTPException, status, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse

@@ -15,6 +15,10 @@ class VeltrisException(Exception):
         status_code: int = 500,
         details: Optional[Dict[str, Any]] = None
     ):
+        print(f"[EXCEPTION] Creating {self.__class__.__name__}: {error_code} (Status: {status_code})")
+        print(f"[EXCEPTION] Message: {message}")
+        if details:
+            print(f"[EXCEPTION] Details: {details}")
         self.message = message
         self.error_code = error_code
         self.status_code = status_code

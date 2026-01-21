@@ -27,8 +27,11 @@ class ChatRequest(BaseModel):
     
     @validator('query')
     def validate_query(cls, v):
+        print(f"[VALIDATOR] Validating query: '{v}' (length: {len(v)})")
         if not v.strip():
+            print(f"[VALIDATOR] Query validation failed - empty or whitespace only")
             raise ValueError("Query cannot be empty or whitespace only")
+        print(f"[VALIDATOR] Query validation passed")
         return v.strip()
 
 

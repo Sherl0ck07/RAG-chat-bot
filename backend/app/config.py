@@ -22,7 +22,7 @@ class Settings(BaseSettings):
     chunk_size: int = 1000
     chunk_overlap: int = 200
     top_k_retrieval: int = 5
-    similarity_threshold: float = 0.7
+    similarity_threshold: float = 0.5
     
     # Embedding Model
     embedding_model: str = "sentence-transformers/all-MiniLM-L6-v2"
@@ -44,4 +44,17 @@ class Settings(BaseSettings):
 
 
 # Create global settings instance
+print("[CONFIG] Loading configuration from environment and defaults...")
 settings = Settings()
+print("[CONFIG] Configuration loaded successfully")
+print(f"[CONFIG] API Title: {settings.api_title}")
+print(f"[CONFIG] API Version: {settings.api_version}")
+print(f"[CONFIG] Nebius Base URL: {settings.nebius_base_url}")
+print(f"[CONFIG] Nebius Model: {settings.nebius_model_name}")
+print(f"[CONFIG] Chroma Directory: {settings.chroma_persist_directory}")
+print(f"[CONFIG] Collection Name: {settings.collection_name}")
+print(f"[CONFIG] Similarity Threshold: {settings.similarity_threshold}")
+print(f"[CONFIG] Top-K Retrieval: {settings.top_k_retrieval}")
+print(f"[CONFIG] Embedding Model: {settings.embedding_model}")
+print(f"[CONFIG] Log Level: {settings.log_level}")
+print(f"[CONFIG] CORS Origins: {settings.cors_origins}")

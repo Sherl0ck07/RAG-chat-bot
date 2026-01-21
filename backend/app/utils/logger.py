@@ -13,6 +13,7 @@ class StructuredLogger:
     """Structured JSON logger for production"""
     
     def __init__(self, name: str, level: str = "INFO"):
+        print(f"[LOGGER_INIT] Initializing logger: {name}, Level: {level}")
         self.logger = logging.getLogger(name)
         self.logger.setLevel(getattr(logging, level.upper()))
         
@@ -30,6 +31,7 @@ class StructuredLogger:
         handler.setFormatter(formatter)
         
         self.logger.addHandler(handler)
+        print(f"[LOGGER_INIT] Logger {name} initialized successfully")
     
     def _format_message(
         self,

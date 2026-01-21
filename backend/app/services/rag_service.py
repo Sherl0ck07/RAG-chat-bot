@@ -1,7 +1,7 @@
 """
 RAG Service - Core retrieval and generation logic
 """
-
+# file: backend/app/services/rag_service.py
 import time
 from typing import List, Dict, Tuple, Optional
 from functools import wraps
@@ -25,6 +25,10 @@ from app.exceptions import (
 
 logger = get_logger(__name__, settings.log_level)
 
+import torch
+
+device = "cuda" if torch.cuda.is_available() else "cpu"
+logger.info(f"Using embedding device: {device}")
 
 def retry_with_backoff(max_retries: int = 3, backoff_factor: float = 2.0):
     """Decorator for retry logic with exponential backoff"""
@@ -109,14 +113,21 @@ Answer:"""
     
     def _validate_config(self) -> None:
         """Validate required configuration"""
+        print(f"[RAG_VALIDATE_CONFIG] Validating configuration...")
         try:
             if not settings.nebius_api_key:
                 raise ConfigurationError("Nebius API key is not set")
+            print(f"[RAG_VALIDATE_CONFIG] Nebius API key: OK (length={len(settings.nebius_api_key)})")
+            
             if not settings.nebius_base_url:
                 raise ConfigurationError("Nebius base URL is not set")
+            print(f"[RAG_VALIDATE_CONFIG] Nebius base URL: {settings.nebius_base_url}")
+            
             if not settings.chroma_persist_directory:
                 raise ConfigurationError("Chroma persist directory is not set")
+            print(f"[RAG_VALIDATE_CONFIG] Chroma directory: {settings.chroma_persist_directory}")
             
+            print(f"[RAG_VALIDATE_CONFIG] Configuration validation PASSED")
             logger.info("Configuration validation passed")
         except ConfigurationError:
             raise
@@ -125,21 +136,27 @@ Answer:"""
     
     def _initialize_embeddings(self) -> HuggingFaceEmbeddings:
         """Initialize embedding model with error handling"""
+        print(f"[RAG_INIT_EMBEDDINGS] Starting embedding model initialization...")
         try:
+            print(f"[RAG_INIT_EMBEDDINGS] Model: {settings.embedding_model}")
             logger.info(f"Loading embedding model: {settings.embedding_model}")
             embeddings = HuggingFaceEmbeddings(
                 model_name=settings.embedding_model,
-                model_kwargs={'device': 'cpu'}
+                model_kwargs={"device": device}
             )
+            print(f"[RAG_INIT_EMBEDDINGS] Embedding model loaded successfully on device: {device}")
             logger.info("Embedding model loaded successfully")
             return embeddings
         except Exception as e:
+            print(f"[RAG_INIT_EMBEDDINGS] ERROR: Failed to load embedding model: {type(e).__name__}: {e}")
             logger.error(f"Failed to load embedding model: {type(e).__name__}: {e}")
             raise EmbeddingError(f"Failed to load embedding model: {str(e)}")
     
     def _load_vectorstore(self) -> Chroma:
         """Load existing vector store with error handling"""
+        print(f"[RAG_LOAD_VECTORSTORE] Loading vector store...")
         try:
+            print(f"[RAG_LOAD_VECTORSTORE] Path: {settings.chroma_persist_directory}")
             logger.info(f"Loading vector store from {settings.chroma_persist_directory}")
             vectorstore = Chroma(
                 persist_directory=settings.chroma_persist_directory,
@@ -148,26 +165,34 @@ Answer:"""
             )
             
             count = vectorstore._collection.count()
+            print(f"[RAG_LOAD_VECTORSTORE] Vector store loaded successfully")
+            print(f"[RAG_LOAD_VECTORSTORE] Document count: {count}")
             logger.info(f"Loaded vector store with {count} documents")
             
             if count == 0:
+                print(f"[RAG_LOAD_VECTORSTORE] WARNING: Vector store is empty - no documents found")
                 logger.warning("Vector store is empty - no documents found")
             
             return vectorstore
             
         except FileNotFoundError as e:
+            print(f"[RAG_LOAD_VECTORSTORE] ERROR: Vector store directory not found at {settings.chroma_persist_directory}")
             logger.error(f"Vector store directory not found: {settings.chroma_persist_directory}")
             raise VectorStoreError(
                 f"Vector store not found at {settings.chroma_persist_directory}",
                 details={"path": settings.chroma_persist_directory}
             )
         except Exception as e:
+            print(f"[RAG_LOAD_VECTORSTORE] ERROR: {type(e).__name__}: {e}")
             logger.error(f"Error loading vector store: {type(e).__name__}: {e}")
             raise VectorStoreError(f"Failed to load vector store: {str(e)}")
     
     def _initialize_llm(self) -> ChatOpenAI:
         """Initialize LLM with error handling"""
+        print(f"[RAG_INIT_LLM] Initializing LLM...")
         try:
+            print(f"[RAG_INIT_LLM] Model: {settings.nebius_model_name}")
+            print(f"[RAG_INIT_LLM] API Base URL: {settings.nebius_base_url}")
             logger.info(f"Initializing LLM: {settings.nebius_model_name}")
             llm = ChatOpenAI(
                 model=settings.nebius_model_name,
@@ -177,9 +202,11 @@ Answer:"""
                 max_tokens=1000,
                 request_timeout=30
             )
+            print(f"[RAG_INIT_LLM] LLM initialized successfully")
             logger.info("LLM initialized successfully")
             return llm
         except Exception as e:
+            print(f"[RAG_INIT_LLM] ERROR: Failed to initialize LLM: {type(e).__name__}: {e}")
             logger.error(f"Failed to initialize LLM: {type(e).__name__}: {e}")
             raise LLMError(f"Failed to initialize LLM: {str(e)}")
     
@@ -237,13 +264,17 @@ Answer:"""
             
             # Filter by similarity threshold
             print(f"\n[RETRIEVE_DOCUMENTS] Filtering by threshold: {settings.similarity_threshold}")
-            print(f"[RETRIEVE_DOCUMENTS] Max distance allowed: {1 - settings.similarity_threshold:.6f}")
+            max_distance = 1 - settings.similarity_threshold
+            print(f"[RETRIEVE_DOCUMENTS] Max distance allowed: {max_distance:.6f}")
+            print(f"[RETRIEVE_DOCUMENTS] Checking each document:")
             
-            filtered_docs = [
-                (doc, score) 
-                for doc, score in docs_with_scores 
-                if score <= settings.similarity_threshold  # ChromaDB uses distance
-            ]
+            filtered_docs = []
+            for idx, (doc, score) in enumerate(docs_with_scores):
+                similarity = 1 - score
+                passes_threshold = score <= settings.similarity_threshold
+                print(f"  [DOC {idx}] Distance: {score:.6f}, Similarity: {similarity:.6f}, Passes: {passes_threshold}")
+                if passes_threshold:
+                    filtered_docs.append((doc, score))
             
             print(f"[RETRIEVE_DOCUMENTS] After filtering: {len(filtered_docs)}/{len(docs_with_scores)} documents passed threshold")
             
