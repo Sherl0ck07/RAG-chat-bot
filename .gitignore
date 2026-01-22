@@ -157,3 +157,9 @@ Thumbs.db
 # Project specific
 venv/
 .venv/
+
+
+backend/.venv-backend/
+backend/.vscode/
+frontend/.venv-frontend/
+frontend/.vscode/
