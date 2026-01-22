@@ -5,7 +5,7 @@ API Client for Backend Communication
 import requests
 from typing import Dict, Optional, List
 import time
-
+import os
 
 class APIError(Exception):
     """Custom exception for API errors"""
@@ -18,9 +18,13 @@ class APIError(Exception):
 class APIClient:
     """Client for communicating with the FastAPI backend"""
     
-    def __init__(self, base_url: str = "http://localhost:8000"):
+    def __init__(self, base_url: str = None):  # ✅ NEW
+        # Read from environment variable (for Docker) or use default (for local dev)
+        if base_url is None:
+            base_url = os.getenv("BACKEND_URL", "http://localhost:8000")
+        
         self.base_url = base_url
-        self.timeout = 60  # 60 seconds for LLM responses
+        self.timeout = 60
     
     def health_check(self) -> Optional[Dict]:
         """
